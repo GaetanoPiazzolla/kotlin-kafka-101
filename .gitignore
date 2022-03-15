@@ -1,6 +1,6 @@
 
 *.properties
-
+.gradle/
 build/
 
 .idea/**/workspace.xml
