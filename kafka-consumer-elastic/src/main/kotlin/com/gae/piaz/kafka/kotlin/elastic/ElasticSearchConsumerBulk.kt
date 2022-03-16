@@ -2,7 +2,10 @@ package com.gae.piaz.kafka.kotlin.elastic
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient
 import co.elastic.clients.elasticsearch._types.Refresh
+import co.elastic.clients.elasticsearch.core.BulkRequest
 import co.elastic.clients.elasticsearch.core.IndexRequest
+import co.elastic.clients.elasticsearch.core.bulk.BulkOperation
+import co.elastic.clients.elasticsearch.core.bulk.IndexOperation
 import co.elastic.clients.json.jackson.JacksonJsonpMapper
 import co.elastic.clients.transport.ElasticsearchTransport
 import co.elastic.clients.transport.rest_client.RestClientTransport
@@ -18,7 +21,8 @@ import org.slf4j.LoggerFactory
 import java.time.Duration
 import java.util.*
 
-class ElasticSearchConsumer {
+
+class ElasticSearchConsumerBulk {
 
     companion object {
         @Suppress("JAVA_CLASS_ON_COMPANION")
@@ -42,32 +46,34 @@ class ElasticSearchConsumer {
 
             logger.info("received ${records.count()} records")
 
+            val operations = mutableListOf<BulkOperation>()
+
             for (record in records) {
 
-                // take specific id from the message itself
                 var id = extractIdFromTweet(record.value())
                 if (id == null) {
-                    // generalize id from kafka
                     id = "${record.topic()}_${record.partition()}_${record.offset()}"
                 }
 
                 val appData = AppData(record.key(), record.value())
+                val operation = IndexOperation.Builder<AppData>().index("twitter").document(appData).id(id).build()
+                val bulkOperation = BulkOperation.Builder().index(operation).build()
 
-                val docId = client.index { b: IndexRequest.Builder<Any?> ->
-                    b.index("twitter").document(appData).refresh(Refresh.True)
-                        .id(id)  // <- to make consumer idemptotent.
-                }.id()
+                operations.add(bulkOperation)
 
-                logger.info("inserted into elastic document with id $docId")
-
-                Thread.sleep(10)
+                logger.info("inserted into elastic document with id $id")
 
             }
 
-            logger.info("committing the offset")
-            consumer.commitSync()
-            logger.info("committed")
-            Thread.sleep(1000)
+            if(records.count() > 0) {
+                val builder = BulkRequest.Builder()
+                builder.operations(operations)
+                client.bulk(builder.build())
+                logger.info("committing the offset")
+                consumer.commitSync()
+                logger.info("committed")
+                Thread.sleep(1000)
+            }
         }
     }
 
@@ -88,7 +94,7 @@ class ElasticSearchConsumer {
         prop[ConsumerConfig.AUTO_OFFSET_RESET_CONFIG] = "earliest"
 
         prop[ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG] = "false" // <- need commitSynch of offset!
-        prop[ConsumerConfig.MAX_POLL_RECORDS_CONFIG] = "10" //<- 10 records per poll!
+        prop[ConsumerConfig.MAX_POLL_RECORDS_CONFIG] = "100" //<- 10 records per poll!
 
         logger.info("consumer registered. $prop ")
         val con: KafkaConsumer<String, String> = KafkaConsumer(prop)
@@ -114,7 +120,7 @@ class ElasticSearchConsumer {
 }
 
 fun main(args: Array<String>) {
-    val consumer = ElasticSearchConsumer()
+    val consumer = ElasticSearchConsumerBulk()
     Runtime.getRuntime().addShutdownHook(Thread {
         consumer.disconnectClient();
     })
